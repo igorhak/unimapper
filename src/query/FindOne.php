@@ -5,7 +5,6 @@ namespace UniMapper\Query;
 use UniMapper\Query\IConditionable,
     UniMapper\Exceptions\PropertyTypeException,
     UniMapper\Exceptions\QueryException,
-    UniMapper\Mapper,
     UniMapper\Reflection;
 
 class FindOne extends \UniMapper\Query implements IConditionable
@@ -14,9 +13,13 @@ class FindOne extends \UniMapper\Query implements IConditionable
     /** @var mixed */
     public $primaryValue;
 
-    public function __construct(Reflection\Entity $entityReflection, Mapper $mapper, $primaryValue)
+    public function __construct(Reflection\Entity $entityReflection, array $mappers, $primaryValue)
     {
-        parent::__construct($entityReflection, $mapper);
+        parent::__construct($entityReflection, $mappers);
+
+        if (!$entityReflection->hasPrimaryProperty()) {
+            throw new QueryException("Can not use findOne() on entity without primary property!");
+        }
 
         try {
             $entityReflection->getPrimaryProperty()->validateValue($primaryValue);

@@ -3,9 +3,10 @@
 namespace UniMapper\Query;
 
 use UniMapper\Exceptions\QueryException,
-    UniMapper\Mapper,
     UniMapper\Reflection,
+    UniMapper\Reflection\Entity\Property\Association\HasMany,
     UniMapper\EntityCollection,
+    UniMapper\Mapper,
     UniMapper\Query\IConditionable;
 
 class FindAll extends \UniMapper\Query implements IConditionable
@@ -16,9 +17,9 @@ class FindAll extends \UniMapper\Query implements IConditionable
     public $orderBy = [];
     public $selection = [];
 
-    public function __construct(Reflection\Entity $entityReflection, Mapper $mapper)
+    public function __construct(Reflection\Entity $entityReflection, array $mappers)
     {
-        parent::__construct($entityReflection, $mapper);
+        parent::__construct($entityReflection, $mappers);
         $this->selection = array_slice(func_get_args(), 2);
     }
 
@@ -48,18 +49,64 @@ class FindAll extends \UniMapper\Query implements IConditionable
         return $this;
     }
 
-    public function onExecute(\UniMapper\Mapper $mapper)
+    public function onExecute(Mapper $mapper)
     {
+        // Get associations
+        $localAssociations = [];
+        $remoteAssociations = [];
+        foreach ($this->entityReflection->getProperties() as $property) {
+
+            $association = $property->isAssociation();
+            if ($association && in_array($property->getName(), $this->selection)) {
+
+                if ($association->isRemote()) {
+                    $remoteAssociations[$propertyName] = $association;
+                } else {
+                    $localAssociations[$propertyName] = $association;
+                }
+            }
+        }
+
         $result = $mapper->findAll(
             $this->entityReflection->getMapperReflection()->getResource(),
             $this->getSelection($this->selection),
             $this->conditions,
             $this->getOrderBy($this->orderBy),
             $this->limit,
-            $this->offset
+            $this->offset,
+            $localAssociations
         );
-        if ($result === false) {
+        if (empty($result)) {
             return new EntityCollection($this->entityReflection->getClassName());
+        }
+
+        // Get remote associations
+        $primaryPropertyName = $this->entityReflection->getPrimaryProperty()->getMappedName();
+        $primaryValues = [];
+        foreach ($result as $item) {
+            $primaryValues[] = $item[$primaryPropertyName];
+        }
+
+        $associated = [];
+        foreach ($remoteAssociations as $propertyName => $association) {
+
+            if ($association instanceof HasMany) {
+                $associated[$propertyName] = $this->hasMany($mapper, $this->mappers[$association->getTargetMapperName()], $association, $primaryValues);
+            } else {
+                throw new QueryException("Unsupported association " . get_class($association) . "!");
+            }
+        }
+
+        // Merge returned associations
+        foreach ($result as $index => $item) {
+
+            foreach ($associated as $propertyName => $associatedResult) {
+
+                $primaryValue = $item->{$association->getPrimaryKey()}; // potencial future bug, association wrong?
+                if (isset($associatedResult[$primaryValue])) {
+                    $item[$propertyName] = $associatedResult[$primaryValue];
+                }
+            }
         }
 
         return $mapper->mapCollection($this->entityReflection->getClassName(), $result);
@@ -101,7 +148,15 @@ class FindAll extends \UniMapper\Query implements IConditionable
         foreach ($selection as $name) {
 
             if ($this->entityReflection->hasProperty($name)) {
-                $result[] = $this->entityReflection->getProperty($name)->getMappedName();
+
+                $property = $this->entityReflection->getProperty($name);
+
+                // Skip associations and computed properties
+                if ($property->isComputed() || $property->isAssociation()) {
+                    continue;
+                }
+
+                $result[] = $property->getMappedName();
             }
         }
         return $result;
@@ -115,6 +170,79 @@ class FindAll extends \UniMapper\Query implements IConditionable
             $unmapped[$mappedName] = $direction;
         }
         return $unmapped;
+    }
+
+    private function hasMany(Mapper $currentMapper, Mapper $targetMapper, HasMany $association, array $primaryValues)
+    {
+        $joinResult = $currentMapper->findAll(
+            $association->getJoinResource(),
+            [$association->getJoinKey(), $association->getReferenceKey()],
+            [[$association->getJoinKey(), "IN", $primaryValues, "AND"]]
+        );
+
+        $joinResult = $this->groupResult($joinResult, [$association->getReferenceKey(), $association->getJoinKey()]);
+
+        $targetResult = $targetMapper->findAll(
+             $association->getTargetResource(),
+             $this->unmapSelection($association->getTargetReflection()),
+             [[$association->getForeignKey(), "IN", array_keys($joinResult), "AND"]]
+        );
+
+        $targetResult = $this->groupResult($targetResult, [$association->getForeignKey()]);
+
+        $result = [];
+        foreach ($joinResult as $targetKey => $join) {
+
+            foreach ($join as $originKey => $data) {
+                if (!isset($targetResult[$targetKey])) {
+                    throw new \Exception("Can not merge associated result key '" . $targetKey . "' not found in result from '" . $association->getTargetResource() . "'! Maybe wrong value in join table/resource.");
+                }
+                $result[$originKey][] = $targetResult[$targetKey];
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Group associative array
+     *
+     * @param array $original
+     * @param array $keys
+     * @param int   $level
+     *
+     * @return array
+     *
+     * @link http://tigrou.nl/2012/11/26/group-a-php-array-to-a-tree-structure/
+     */
+    private function groupResult($original, $keys, $level = 0)
+    {
+        $converted = [];
+        $key = $keys[$level];
+        $isDeepest = sizeof($keys) - 1 == $level;
+
+        $level++;
+
+        $filtered = [];
+        foreach ($original as $k => $subArray) {
+
+            $subArray = (array) $subArray;
+            $thisLevel = $subArray[$key];
+            if ($isDeepest) {
+                $converted[$thisLevel] = $subArray;
+            } else {
+                $converted[$thisLevel] = [];
+            }
+            $filtered[$thisLevel][] = $subArray;
+        }
+
+        if (!$isDeepest) {
+            foreach (array_keys($converted) as $value) {
+                $converted[$value] = $this->groupResult($filtered[$value], $keys, $level);
+            }
+        }
+
+        return $converted;
     }
 
 }
