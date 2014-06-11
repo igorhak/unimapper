@@ -80,31 +80,38 @@ class FindAll extends \UniMapper\Query implements IConditionable
             return new EntityCollection($this->entityReflection->getClassName());
         }
 
-        // Get remote associations
-        $primaryPropertyName = $this->entityReflection->getPrimaryProperty()->getMappedName();
-        $primaryValues = [];
-        foreach ($result as $item) {
-            $primaryValues[] = $item[$primaryPropertyName];
-        }
+        if ($remoteAssociations) {
 
-        $associated = [];
-        foreach ($remoteAssociations as $propertyName => $association) {
+            // Get remote associations
+            $primaryPropertyName = $this->entityReflection->getPrimaryProperty()->getMappedName();
+            $primaryValues = [];
+            foreach ($result as $item) {
 
-            if ($association instanceof HasMany) {
-                $associated[$propertyName] = $this->hasMany($mapper, $this->mappers[$association->getTargetMapperName()], $association, $primaryValues);
-            } else {
-                throw new QueryException("Unsupported association " . get_class($association) . "!");
+                if (!is_array($item)) {
+                    $item = (array) $item;
+                }
+                $primaryValues[] = $item[$primaryPropertyName];
             }
-        }
 
-        // Merge returned associations
-        foreach ($result as $index => $item) {
+            $associated = [];
+            foreach ($remoteAssociations as $propertyName => $association) {
 
-            foreach ($associated as $propertyName => $associatedResult) {
+                if ($association instanceof HasMany) {
+                    $associated[$propertyName] = $this->hasMany($mapper, $this->mappers[$association->getTargetMapperName()], $association, $primaryValues);
+                } else {
+                    throw new QueryException("Unsupported association " . get_class($association) . "!");
+                }
+            }
 
-                $primaryValue = $item->{$association->getPrimaryKey()}; // potencial future bug, association wrong?
-                if (isset($associatedResult[$primaryValue])) {
-                    $item[$propertyName] = $associatedResult[$primaryValue];
+            // Merge returned associations
+            foreach ($result as $index => $item) {
+
+                foreach ($associated as $propertyName => $associatedResult) {
+
+                    $primaryValue = $item->{$association->getPrimaryKey()}; // potencial future bug, association wrong?
+                    if (isset($associatedResult[$primaryValue])) {
+                        $item[$propertyName] = $associatedResult[$primaryValue];
+                    }
                 }
             }
         }
